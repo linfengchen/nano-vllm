@@ -17,11 +17,11 @@ def fused_add_gelu_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Fused Add + GELU操作 (使用快速近似)
+    Fused Add + GELU操作 (使用tanh近似，与PyTorch一致)
     output = GELU(input + bias)
     
-    使用sigmoid近似: GELU(x) ≈ x * sigmoid(1.702 * x)
-    这个近似比tanh版本更快且精度足够
+    使用tanh近似（与PyTorch的approximate='tanh'一致）:
+    GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
     """
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
@@ -36,19 +36,24 @@ def fused_add_gelu_kernel(
     # Add
     x = x + bias
     
-    # 快速GELU近似: GELU(x) ≈ x * sigmoid(1.702 * x)
-    # sigmoid(x) = 1 / (1 + exp(-x))
-    coeff = 1.702
-    sigmoid_input = coeff * x
-    # 使用数值稳定的sigmoid实现
-    # sigmoid(x) = exp(x) / (1 + exp(x)) for x >= 0
-    # sigmoid(x) = 1 / (1 + exp(-x)) for x < 0
-    sigmoid_val = tl.where(
-        sigmoid_input >= 0.0,
-        1.0 / (1.0 + tl.exp(-sigmoid_input)),
-        tl.exp(sigmoid_input) / (1.0 + tl.exp(sigmoid_input))
+    # GELU tanh近似（与PyTorch一致）
+    # GELU(x) ≈ 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+    sqrt_2_over_pi = 0.7978845608028654  # sqrt(2/π)
+    x_cubed = x * x * x
+    tanh_input = sqrt_2_over_pi * (x + 0.044715 * x_cubed)
+    
+    # 手动实现tanh，使用数值稳定的方式
+    # tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
+    # 为了数值稳定性，使用：
+    # tanh(x) = -1 + 2 / (1 + exp(-2x)) for x >= 0
+    # tanh(x) = 1 - 2 / (1 + exp(2x)) for x < 0
+    tanh_val = tl.where(
+        tanh_input >= 0.0,
+        -1.0 + 2.0 / (1.0 + tl.exp(-2.0 * tanh_input)),
+        1.0 - 2.0 / (1.0 + tl.exp(2.0 * tanh_input))
     )
-    output = x * sigmoid_val
+    
+    output = 0.5 * x * (1.0 + tanh_val)
     
     # 存储结果
     tl.store(output_ptr + offsets, output, mask=mask)
