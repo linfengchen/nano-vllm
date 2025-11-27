@@ -27,6 +27,8 @@ class LLMEngine:
             process.start()
             self.ps.append(process)
             self.events.append(event)
+        
+        print("model=", config.model)
         self.model_runner = ModelRunner(config, 0, self.events)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
@@ -48,10 +50,17 @@ class LLMEngine:
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         token_ids = self.model_runner.call("run", seqs, is_prefill)
-        self.scheduler.postprocess(seqs, token_ids)
+        self.scheduler.postprocess(seqs, token_ids) 
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
         return outputs, num_tokens
+    
+    def stream_step(self):
+        seqs, is_prefill = self.scheduler.schedule()
+        token_ids = self.model_runner.call("run", seqs, is_prefill)
+        self.scheduler.postprocess(seqs, token_ids) 
+        num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
+        return token_ids, num_tokens
 
     def is_finished(self):
         return self.scheduler.is_finished()
@@ -81,6 +90,7 @@ class LLMEngine:
                 pbar.set_postfix({
                     "Prefill": f"{int(prefill_throughput)}tok/s",
                     "Decode": f"{int(decode_throughput)}tok/s",
+                    "Tokens": f"{num_tokens}/{perf_counter() - t}"
                 })
             for seq_id, token_ids in output:
                 outputs[seq_id] = token_ids
